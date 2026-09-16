@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import uvicorn
+from telegram import Update
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,

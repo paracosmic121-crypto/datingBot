@@ -129,6 +129,13 @@ async def main() -> None:
     settings.validate()
     await db.ensure_indexes()
 
+    # Auto-sync AI Personas into MongoDB on startup
+    try:
+        from seed import seed
+        await seed()
+    except Exception as exc:
+        logger.warning("Could not auto-seed personas on startup: %s", exc)
+
     application = build_application()
 
     uv_config = uvicorn.Config(

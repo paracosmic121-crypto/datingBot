@@ -1,5 +1,6 @@
 import html
 import logging
+import os
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -65,7 +66,15 @@ async def _show_next_profile(update_or_query, user_id: int, context: ContextType
     kb = swipe_reply_kb()
 
     if photo:
-        await target_msg.reply_photo(photo=photo, caption=caption, reply_markup=kb)
+        try:
+            if isinstance(photo, str) and os.path.exists(photo):
+                with open(photo, "rb") as f:
+                    await target_msg.reply_photo(photo=f, caption=caption, reply_markup=kb)
+            else:
+                await target_msg.reply_photo(photo=photo, caption=caption, reply_markup=kb)
+        except Exception as exc:
+            logger.warning("Could not reply with photo: %s", exc)
+            await target_msg.reply_text(caption, reply_markup=kb)
     else:
         await target_msg.reply_text(caption, reply_markup=kb)
 

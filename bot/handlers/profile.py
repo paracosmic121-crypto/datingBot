@@ -1,4 +1,5 @@
 import logging
+import os
 
 from telegram import Update
 from telegram.ext import (
@@ -49,7 +50,11 @@ async def _send_profile(update_or_query, user: dict | None, kb=None) -> None:
     photo = user.get("photo_file_id")
     if photo:
         try:
-            await target_msg.reply_photo(photo=photo, caption=caption, reply_markup=kb)
+            if isinstance(photo, str) and os.path.exists(photo):
+                with open(photo, "rb") as f:
+                    await target_msg.reply_photo(photo=f, caption=caption, reply_markup=kb)
+            else:
+                await target_msg.reply_photo(photo=photo, caption=caption, reply_markup=kb)
         except Exception:
             await target_msg.reply_text(caption, reply_markup=kb)
     else:

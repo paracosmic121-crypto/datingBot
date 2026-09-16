@@ -259,6 +259,9 @@ async def receive_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     description = update.message.text.strip()
+    if len(description) < 10:
+        await update.message.reply_text("Bio is too short — write at least 10 characters so others can get to know you:")
+        return DESCRIPTION
     if len(description) > 500:
         await update.message.reply_text("Keep your bio under 500 characters. Try again:")
         return DESCRIPTION
@@ -301,7 +304,7 @@ def build_edit_profile_conversation() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
             CommandHandler("editprofile", edit_profile_entry),
-            MessageHandler(filters.Regex(r"^(2|Edit my profile|edit profile)$"), edit_profile_entry),
+            MessageHandler(filters.Regex(r"^(Edit my profile|edit profile)$"), edit_profile_entry),
             MessageHandler(filters.Regex(r"^(3|Change my photo/video|change photo)$"), photo_edit_shortcut),
             MessageHandler(filters.Regex(r"^(4|Change profile text|change text)$"), text_edit_shortcut),
             CallbackQueryHandler(

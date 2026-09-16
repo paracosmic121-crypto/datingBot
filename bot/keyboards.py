@@ -1,5 +1,7 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from config import settings
+
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
     """Bottom reply keyboard with compact number shortcuts."""
@@ -10,9 +12,9 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
 
 
 def swipe_reply_kb() -> ReplyKeyboardMarkup:
-    """Bottom reply keyboard for swiping candidates with love letter direct message button."""
+    """Bottom reply keyboard for swiping candidates with love letter, undo, and sleep buttons."""
     return ReplyKeyboardMarkup(
-        [["❤️", "💌", "👎", "💤"]],
+        [["❤️", "💌", "👎", "↩️", "💤"]],
         resize_keyboard=True,
     )
 
@@ -110,8 +112,15 @@ def like_received_kb(sender_user_id: int) -> InlineKeyboardMarkup:
 
 
 def premium_kb() -> InlineKeyboardMarkup:
+    """Inline keyboard for premium purchase — reads live star amounts from settings."""
     rows = [
-        [InlineKeyboardButton("⭐ 15 Days — 100 Stars", callback_data="buy_premium:15")],
-        [InlineKeyboardButton("⭐ 30 Days — 200 Stars", callback_data="buy_premium:30")],
+        [InlineKeyboardButton(
+            f"⭐ 15 Days — {settings.PREMIUM_15D_STARS} Stars",
+            callback_data="buy_premium:15",
+        )],
+        [InlineKeyboardButton(
+            f"⭐ 30 Days — {settings.PREMIUM_30D_STARS} Stars",
+            callback_data="buy_premium:30",
+        )],
     ]
     return InlineKeyboardMarkup(rows)

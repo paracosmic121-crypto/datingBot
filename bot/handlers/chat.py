@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import time
 
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
@@ -155,6 +156,13 @@ async def in_chat_message_handler(update: Update, context: ContextTypes.DEFAULT_
 
     # 1. AI Persona response via Grok
     if partner.get("is_ai"):
+        # Per-user rate limit: no more than one AI reply every 2 seconds
+        last_reply_at: float = context.user_data.get("last_ai_reply_at", 0.0)
+        if time.monotonic() - last_reply_at < 2.0:
+            # Too fast — silently ignore this message to avoid burning API credits
+            return True
+        context.user_data["last_ai_reply_at"] = time.monotonic()
+
         partner_name = html.escape(str(partner.get("name", "Partner")))
 
         await context.bot.send_chat_action(chat_id=user_id, action=ChatAction.TYPING)

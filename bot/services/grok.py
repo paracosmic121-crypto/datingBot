@@ -4,6 +4,7 @@ Supports both Groq (gsk_...) and xAI Grok (xai-...) with round-robin rotation an
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -13,8 +14,9 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Atomic key index for round-robin rotation
+# Round-robin key rotation state — protected by an asyncio lock
 _current_key_idx: int = 0
+_key_lock: asyncio.Lock = asyncio.Lock()
 
 
 def _get_provider_config(api_key: str) -> tuple[str, str]:
@@ -100,30 +102,33 @@ async def generate_grok_reply(
     # Add the current user message
     messages.append({"role": "user", "content": user_message})
 
-    # Try keys using round-robin with automatic fallback on rate limit / error
+    # Try keys using round-robin with automatic fallback on rate limit / error.
+    # The lock ensures two concurrent coroutines don't race on _current_key_idx.
     num_keys = len(keys)
-    for attempt in range(num_keys):
-        key_index = (_current_key_idx + attempt) % num_keys
-        api_key = keys[key_index]
-        endpoint, model = _get_provider_config(api_key)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(num_keys):
+            async with _key_lock:
+                key_index = _current_key_idx % num_keys
+            api_key = keys[key_index]
+            endpoint, model = _get_provider_config(api_key)
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.8,
-            "max_tokens": 150,
-        }
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.8,
+                "max_tokens": 150,
+            }
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
                 resp = await client.post(endpoint, headers=headers, json=payload)
                 if resp.status_code == 200:
-                    # Advance global index to next key for the subsequent request
-                    _current_key_idx = (key_index + 1) % num_keys
+                    # Advance to the next key for subsequent requests
+                    async with _key_lock:
+                        _current_key_idx = (key_index + 1) % num_keys
                     data = resp.json()
                     reply = data["choices"][0]["message"]["content"].strip()
                     return reply
@@ -134,14 +139,19 @@ async def generate_grok_reply(
                         api_key[-6:],
                         resp.status_code,
                     )
+                    async with _key_lock:
+                        _current_key_idx = (key_index + 1) % num_keys
                     continue
                 else:
                     logger.error("API error %s: %s", resp.status_code, resp.text)
+                    async with _key_lock:
+                        _current_key_idx = (key_index + 1) % num_keys
                     continue
-        except Exception as exc:
-            logger.warning("Error with key %s: %s (%s). Rotating...", key_index + 1, exc, type(exc).__name__)
-            continue
+            except Exception as exc:
+                logger.warning("Error with key %s: %s (%s). Rotating...", key_index + 1, exc, type(exc).__name__)
+                async with _key_lock:
+                    _current_key_idx = (key_index + 1) % num_keys
+                continue
 
-    # If all keys failed, advance index and return friendly fallback
-    _current_key_idx = (_current_key_idx + 1) % num_keys
+    # If all keys failed, return friendly fallback
     return "Hey! Just saw your message 😊 Tell me more about your day!"

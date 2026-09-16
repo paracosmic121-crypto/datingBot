@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log errors caused by Updates gracefully."""
-    logger.warning("Error encountered during update handling: %s", context.error)
+    """Log errors caused by Updates with full tracebacks."""
+    logger.error("Unhandled exception during update handling", exc_info=context.error)
 
 
 async def general_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -102,11 +102,12 @@ def build_application() -> Application:
     application.add_handler(MessageHandler(filters.Regex(r"^(❤️|👍|Like)"), discover.swipe_like_handler))
     application.add_handler(MessageHandler(filters.Regex(r"^(💌|Love|Letter|Message)"), discover.swipe_love_letter_handler))
     application.add_handler(MessageHandler(filters.Regex(r"^(👎|Dislike)"), discover.swipe_dislike_handler))
+    application.add_handler(MessageHandler(filters.Regex(r"^↩️$"), discover.undo_swipe_handler))
     application.add_handler(MessageHandler(filters.Regex(r"^(💤|Sleep|Menu|Back)"), discover.swipe_sleep_handler))
 
-    # --- Main Menu ReplyKeyboard triggers (bottom 1 🚀, 2, 3, 4, 5) ---
+    # --- Main Menu ReplyKeyboard triggers (buttons 1-5) ---
     application.add_handler(MessageHandler(filters.Regex(r"^(1\s*🚀|1)$"), discover.discover))
-    application.add_handler(MessageHandler(filters.Regex(r"^2$"), profile.myprofile))
+    application.add_handler(MessageHandler(filters.Regex(r"^2$"), profile.myprofile))         # View my profile
     application.add_handler(MessageHandler(filters.Regex(r"^3$"), profile.photo_edit_shortcut))
     application.add_handler(MessageHandler(filters.Regex(r"^4$"), profile.text_edit_shortcut))
     application.add_handler(MessageHandler(filters.Regex(r"^5$"), premium.premium_info))
@@ -158,6 +159,15 @@ async def main() -> None:
         finally:
             await application.updater.stop()
             await application.stop()
+
+            # Gracefully cancel any in-flight delayed AI match tasks
+            ai_tasks: set = application.bot_data.get("_ai_tasks", set())
+            if ai_tasks:
+                logger.info("Cancelling %d pending AI match task(s)...", len(ai_tasks))
+                for task in list(ai_tasks):
+                    task.cancel()
+                await asyncio.gather(*ai_tasks, return_exceptions=True)
+                logger.info("All AI match tasks cancelled.")
 
 
 if __name__ == "__main__":

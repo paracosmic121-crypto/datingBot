@@ -23,6 +23,11 @@ _client: Optional[AsyncIOMotorClient] = None
 _db: Optional[AsyncIOMotorDatabase] = None
 
 
+def _now() -> dt.datetime:
+    """Returns current UTC time as a timezone-aware datetime (Python 3.12+ safe)."""
+    return dt.datetime.now(dt.timezone.utc)
+
+
 def get_db() -> AsyncIOMotorDatabase:
     global _client, _db
     if _db is None:
@@ -38,6 +43,7 @@ async def ensure_indexes() -> None:
     await db.users.create_index("gender")
     await db.users.create_index("is_ai")
     await db.likes.create_index([("from_id", 1), ("to_id", 1)], unique=True)
+    await db.likes.create_index([("from_id", 1), ("at", -1)])  # for undo
     await db.matches.create_index([("user_a", 1), ("user_b", 1)], unique=True)
     await db.messages.create_index([("from_id", 1), ("to_id", 1), ("created_at", 1)])
 
@@ -52,26 +58,27 @@ async def get_user(user_id: int) -> Optional[dict]:
 
 async def upsert_user_basic(user_id: int, username: str | None, first_name: str | None) -> None:
     """Called on every /start so we always have a stub record + fresh username."""
+    now = _now()
     await get_db().users.update_one(
         {"user_id": user_id},
         {
             "$set": {
                 "username": username,
                 "first_name": first_name,
-                "last_seen": dt.datetime.utcnow(),
+                "last_seen": now,
             },
             "$setOnInsert": {
                 "user_id": user_id,
-                "created_at": dt.datetime.utcnow(),
+                "created_at": now,
                 "profile_complete": False,
                 "gender": None,
                 "looking_for": None,
                 "is_premium": False,
                 "is_ai": False,
                 "likes_given_today": 0,
-                "likes_reset_at": dt.datetime.utcnow(),
+                "likes_reset_at": now,
                 "views_this_hour": 0,
-                "views_window_start": dt.datetime.utcnow(),
+                "views_window_start": now,
             },
         },
         upsert=True,
@@ -82,11 +89,9 @@ async def update_profile_field(user_id: int, field: str, value: Any) -> None:
     allowed = {"gender", "looking_for", "name", "age", "location", "description", "photo_file_id"}
     if field not in allowed:
         raise ValueError(f"Cannot update field '{field}'")
-    
-    update_data = {field: value, "last_seen": dt.datetime.utcnow()}
-    if field == "gender":
-        # Automatically set looking_for to the opposite gender if not already set
-        update_data["looking_for"] = "female" if value == "male" else "male"
+
+    now = _now()
+    update_data = {field: value, "last_seen": now}
 
     await get_db().users.update_one(
         {"user_id": user_id},
@@ -94,34 +99,47 @@ async def update_profile_field(user_id: int, field: str, value: Any) -> None:
             "$set": update_data,
             "$setOnInsert": {
                 "user_id": user_id,
-                "created_at": dt.datetime.utcnow(),
+                "created_at": now,
                 "profile_complete": False,
                 "is_premium": False,
                 "is_ai": False,
                 "likes_given_today": 0,
-                "likes_reset_at": dt.datetime.utcnow(),
+                "likes_reset_at": now,
                 "views_this_hour": 0,
-                "views_window_start": dt.datetime.utcnow(),
+                "views_window_start": now,
             },
         },
         upsert=True,
     )
 
+    # If gender was updated, set a sensible default for looking_for ONLY if it
+    # hasn't been explicitly chosen yet — avoids overwriting a custom preference.
+    if field == "gender":
+        default_lf = "female" if value == "male" else "male"
+        await get_db().users.update_one(
+            {
+                "user_id": user_id,
+                "$or": [{"looking_for": None}, {"looking_for": {"$exists": False}}],
+            },
+            {"$set": {"looking_for": default_lf}},
+        )
+
 
 async def mark_profile_complete(user_id: int) -> None:
+    now = _now()
     await get_db().users.update_one(
         {"user_id": user_id},
         {
-            "$set": {"profile_complete": True, "last_seen": dt.datetime.utcnow()},
+            "$set": {"profile_complete": True, "last_seen": now},
             "$setOnInsert": {
                 "user_id": user_id,
-                "created_at": dt.datetime.utcnow(),
+                "created_at": now,
                 "is_premium": False,
                 "is_ai": False,
                 "likes_given_today": 0,
-                "likes_reset_at": dt.datetime.utcnow(),
+                "likes_reset_at": now,
                 "views_this_hour": 0,
-                "views_window_start": dt.datetime.utcnow(),
+                "views_window_start": now,
             },
         },
         upsert=True,
@@ -129,19 +147,20 @@ async def mark_profile_complete(user_id: int) -> None:
 
 
 async def set_premium(user_id: int, is_premium: bool, until: dt.datetime | None = None) -> None:
+    now = _now()
     await get_db().users.update_one(
         {"user_id": user_id},
         {
-            "$set": {"is_premium": is_premium, "premium_until": until, "last_seen": dt.datetime.utcnow()},
+            "$set": {"is_premium": is_premium, "premium_until": until, "last_seen": now},
             "$setOnInsert": {
                 "user_id": user_id,
-                "created_at": dt.datetime.utcnow(),
+                "created_at": now,
                 "profile_complete": False,
                 "is_ai": False,
                 "likes_given_today": 0,
-                "likes_reset_at": dt.datetime.utcnow(),
+                "likes_reset_at": now,
                 "views_this_hour": 0,
-                "views_window_start": dt.datetime.utcnow(),
+                "views_window_start": now,
             },
         },
         upsert=True,
@@ -153,7 +172,7 @@ def is_user_premium(user: dict | None) -> bool:
     if not user or not user.get("is_premium"):
         return False
     until = user.get("premium_until")
-    if until and until < dt.datetime.utcnow():
+    if until and until < _now():
         return False
     return True
 
@@ -167,7 +186,7 @@ async def upsert_ai_profile(profile_dict: dict) -> None:
     user_id = profile_dict["user_id"]
     profile_dict["profile_complete"] = True
     profile_dict["is_ai"] = True
-    profile_dict["last_seen"] = dt.datetime.utcnow()
+    profile_dict["last_seen"] = _now()
     await get_db().users.update_one(
         {"user_id": user_id},
         {"$set": profile_dict},
@@ -201,9 +220,9 @@ async def get_next_profile(user_id: int) -> Optional[dict]:
 
     swiped_docs = await db.likes.find(
         {"from_id": user_id}, {"to_id": 1, "_id": 0}
-    ).to_list(2000)
+    ).to_list(10_000)
     already_swiped = [d["to_id"] for d in swiped_docs]
-    now = dt.datetime.utcnow()
+    now = _now()
 
     # 1. High priority: Premium profiles matching target gender
     query_prem = {
@@ -255,8 +274,11 @@ async def can_view_profile_now(user_id: int) -> tuple[bool, int, int]:
     if is_user_premium(user):
         return True, 999999, 0
 
-    now = dt.datetime.utcnow()
+    now = _now()
     window_start = user.get("views_window_start", now)
+    # Make window_start timezone-aware if stored as naive
+    if window_start.tzinfo is None:
+        window_start = window_start.replace(tzinfo=dt.timezone.utc)
     views_this_hour = user.get("views_this_hour", 0)
 
     # If more than 1 hour passed since window start, reset window
@@ -283,14 +305,9 @@ async def increment_profile_view(user_id: int) -> None:
     if is_user_premium(user):
         return
 
-    now = dt.datetime.utcnow()
     await get_db().users.update_one(
         {"user_id": user_id},
-        {
-            "$inc": {"views_this_hour": 1},
-            "$setOnInsert": {"views_window_start": now},
-        },
-        upsert=True,
+        {"$inc": {"views_this_hour": 1}},
     )
 
 
@@ -300,7 +317,8 @@ async def record_swipe(from_id: int, to_id: int, liked: bool, message: str | Non
     Returns True if this swipe created a mutual match.
     """
     db = get_db()
-    data = {"liked": liked, "at": dt.datetime.utcnow()}
+    now = _now()
+    data: dict = {"liked": liked, "at": now}
     if message:
         data["message"] = message
     await db.likes.update_one(
@@ -318,28 +336,50 @@ async def record_swipe(from_id: int, to_id: int, liked: bool, message: str | Non
     user_a, user_b = sorted([from_id, to_id])
     await db.matches.update_one(
         {"user_a": user_a, "user_b": user_b},
-        {"$setOnInsert": {"user_a": user_a, "user_b": user_b, "at": dt.datetime.utcnow()}},
+        {"$setOnInsert": {"user_a": user_a, "user_b": user_b, "at": now}},
         upsert=True,
     )
     return True
 
 
 async def get_pending_likes_count(user_id: int) -> int:
-    """Returns total count of pending unswiped likes targeting this user."""
+    """Returns count of pending unswiped likes targeting this user, using aggregation."""
     db = get_db()
-    swiped_docs = await db.likes.find({"from_id": user_id}, {"to_id": 1, "_id": 0}).to_list(5000)
-    swiped_ids = [d["to_id"] for d in swiped_docs]
-    return await db.likes.count_documents({
-        "to_id": user_id,
-        "liked": True,
-        "from_id": {"$nin": swiped_ids},
-    })
+    pipeline = [
+        # All like records where this user was the target
+        {"$match": {"to_id": user_id, "liked": True}},
+        # Join with records where this user already swiped the sender
+        {
+            "$lookup": {
+                "from": "likes",
+                "let": {"sender": "$from_id"},
+                "pipeline": [
+                    {
+                        "$match": {
+                            "$expr": {
+                                "$and": [
+                                    {"$eq": ["$from_id", user_id]},
+                                    {"$eq": ["$to_id", "$$sender"]},
+                                ]
+                            }
+                        }
+                    }
+                ],
+                "as": "already_swiped_by_me",
+            }
+        },
+        # Keep only those where user hasn't swiped back yet
+        {"$match": {"already_swiped_by_me": {"$size": 0}}},
+        {"$count": "total"},
+    ]
+    result = await db.likes.aggregate(pipeline).to_list(1)
+    return result[0]["total"] if result else 0
 
 
 async def create_mutual_match(user_a_id: int, user_b_id: int) -> None:
     """Explicitly records reciprocal likes and creates a match between two users (e.g. for delayed AI matches)."""
     db = get_db()
-    now = dt.datetime.utcnow()
+    now = _now()
     await db.likes.update_one(
         {"from_id": user_a_id, "to_id": user_b_id},
         {"$set": {"liked": True, "at": now}},
@@ -366,8 +406,12 @@ async def schedule_next_ai_match_delay(user_id: int) -> int:
     Updates `next_ai_match_at` on the user record.
     """
     user = await get_user(user_id)
-    now = dt.datetime.utcnow()
+    now = _now()
     last_scheduled = user.get("next_ai_match_at") if user else None
+
+    # Make timezone-aware if stored as naive
+    if last_scheduled and last_scheduled.tzinfo is None:
+        last_scheduled = last_scheduled.replace(tzinfo=dt.timezone.utc)
 
     if last_scheduled and last_scheduled > now:
         # Another match is already pending in the future -> space this one 4-5 hours after it
@@ -400,8 +444,11 @@ async def can_like_today(user_id: int) -> bool:
     if is_user_premium(user):
         return True
 
-    reset_at = user.get("likes_reset_at", dt.datetime.utcnow())
-    now = dt.datetime.utcnow()
+    reset_at = user.get("likes_reset_at", _now())
+    now = _now()
+    # Make timezone-aware if stored as naive
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=dt.timezone.utc)
     if (now - reset_at) > dt.timedelta(hours=24):
         await get_db().users.update_one(
             {"user_id": user_id},
@@ -419,6 +466,30 @@ async def increment_like_counter(user_id: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Undo Swipe
+# --------------------------------------------------------------------------- #
+
+async def get_last_swipe(user_id: int) -> Optional[dict]:
+    """Returns the most recent swipe record made by user_id, or None."""
+    return await get_db().likes.find_one(
+        {"from_id": user_id},
+        sort=[("at", -1)],
+    )
+
+
+async def undo_last_swipe(user_id: int) -> Optional[dict]:
+    """
+    Deletes the most recent swipe for a user (premium only, enforced in handler).
+    Returns the deleted swipe document so the caller can re-show that profile.
+    """
+    last = await get_last_swipe(user_id)
+    if not last:
+        return None
+    await get_db().likes.delete_one({"_id": last["_id"]})
+    return last
+
+
+# --------------------------------------------------------------------------- #
 # In-Bot Chat & Messages
 # --------------------------------------------------------------------------- #
 
@@ -429,7 +500,7 @@ async def save_chat_message(from_id: int, to_id: int, text: str) -> dict:
         "from_id": from_id,
         "to_id": to_id,
         "text": text,
-        "created_at": dt.datetime.utcnow(),
+        "created_at": _now(),
     }
     await db.messages.insert_one(msg)
     return msg
@@ -450,7 +521,7 @@ async def get_chat_history(user_a: int, user_b: int, limit: int = 15) -> list[di
 
 
 async def get_user_matches(user_id: int) -> list[dict]:
-    """Returns list of user profile dicts that user_id has mutual matches with."""
+    """Returns list of user profile dicts that user_id has mutual matches with, most-recent first."""
     db = get_db()
     matches_docs = await db.matches.find({
         "$or": [{"user_a": user_id}, {"user_b": user_id}]
@@ -464,8 +535,12 @@ async def get_user_matches(user_id: int) -> list[dict]:
     if not matched_partner_ids:
         return []
 
-    partners = await db.users.find({"user_id": {"$in": matched_partner_ids}}).to_list(len(matched_partner_ids))
-    return partners
+    # Fetch partner profiles, then restore the match-sorted order
+    raw_partners = await db.users.find(
+        {"user_id": {"$in": matched_partner_ids}}
+    ).to_list(len(matched_partner_ids))
+    partners_by_id = {p["user_id"]: p for p in raw_partners}
+    return [partners_by_id[pid] for pid in matched_partner_ids if pid in partners_by_id]
 
 
 # --------------------------------------------------------------------------- #

@@ -21,6 +21,8 @@ from bot.handlers.start import MAIN_MENU_TEXT
 
 logger = logging.getLogger(__name__)
 
+_LOVE_LETTER_MAX_LEN = 500  # Maximum characters for a direct message / love letter
+
 
 def _format_match_text(matched_user: dict) -> str:
     name = html.escape(str(matched_user.get("name", "Someone")))
@@ -79,6 +81,44 @@ async def _delayed_ai_match(user_id: int, ai_id: int, bot, delay_seconds: int = 
         logger.warning("Error in delayed AI match for user %s and AI %s: %s", user_id, ai_id, exc)
 
 
+def _schedule_ai_match_task(user_id: int, ai_id: int, bot, delay: int, bot_data: dict) -> None:
+    """
+    Creates a tracked asyncio task for the delayed AI match.
+    Stores the task in bot_data['_ai_tasks'] so it won't be GC'd and can be
+    cleanly cancelled on graceful shutdown.
+    """
+    task = asyncio.create_task(_delayed_ai_match(user_id, ai_id, bot, delay))
+    ai_tasks: set = bot_data.setdefault("_ai_tasks", set())
+    ai_tasks.add(task)
+    task.add_done_callback(ai_tasks.discard)
+
+
+async def _show_profile(target_msg, profile: dict) -> None:
+    """Renders a single profile (photo + caption + swipe keyboard)."""
+    name = profile.get("name", "—")
+    age = profile.get("age", "—")
+    location = profile.get("location", "—")
+    description = profile.get("description", "")
+    is_prem = db.is_user_premium(profile)
+    badge = " ⭐" if is_prem else ""
+    caption = f"{name}{badge}, {age} — {location}\n\n{description}"
+    photo = profile.get("photo_file_id")
+    kb = swipe_reply_kb()
+
+    if photo:
+        try:
+            if isinstance(photo, str) and os.path.exists(photo):
+                with open(photo, "rb") as f:
+                    await target_msg.reply_photo(photo=f, caption=caption, reply_markup=kb)
+            else:
+                await target_msg.reply_photo(photo=photo, caption=caption, reply_markup=kb)
+        except Exception as exc:
+            logger.warning("Could not reply with photo: %s", exc)
+            await target_msg.reply_text(caption, reply_markup=kb)
+    else:
+        await target_msg.reply_text(caption, reply_markup=kb)
+
+
 async def _show_next_profile(update_or_query, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     target_msg = update_or_query.message if hasattr(update_or_query, "message") else update_or_query
 
@@ -110,28 +150,7 @@ async def _show_next_profile(update_or_query, user_id: int, context: ContextType
     await db.increment_profile_view(user_id)
 
     context.user_data["current_candidate_id"] = profile["user_id"]
-    name = profile.get("name", "—")
-    age = profile.get("age", "—")
-    location = profile.get("location", "—")
-    description = profile.get("description", "")
-    is_prem = db.is_user_premium(profile)
-    badge = " ⭐" if is_prem else ""
-    caption = f"{name}{badge}, {age} — {location}\n\n{description}"
-    photo = profile.get("photo_file_id")
-    kb = swipe_reply_kb()
-
-    if photo:
-        try:
-            if isinstance(photo, str) and os.path.exists(photo):
-                with open(photo, "rb") as f:
-                    await target_msg.reply_photo(photo=f, caption=caption, reply_markup=kb)
-            else:
-                await target_msg.reply_photo(photo=photo, caption=caption, reply_markup=kb)
-        except Exception as exc:
-            logger.warning("Could not reply with photo: %s", exc)
-            await target_msg.reply_text(caption, reply_markup=kb)
-    else:
-        await target_msg.reply_text(caption, reply_markup=kb)
+    await _show_profile(target_msg, profile)
 
 
 async def discover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -267,7 +286,7 @@ async def _process_swipe(
         if target_user and target_user.get("is_ai"):
             # Enforce 1 match at a time and space multiple fake matches by 4-5 hours
             delay = await db.schedule_next_ai_match_delay(user_id)
-            asyncio.create_task(_delayed_ai_match(user_id, target_id, context.bot, delay))
+            _schedule_ai_match_task(user_id, target_id, context.bot, delay, context.bot_data)
         else:
             # User A liked User B (not yet a match) -> notify User B with message
             await _notify_like_received(user_id, target_id, context, message=direct_message)
@@ -305,7 +324,7 @@ async def swipe_love_letter_handler(update: Update, context: ContextTypes.DEFAUL
     context.user_data["awaiting_love_letter_for"] = target_id
     await update.message.reply_text(
         f"💌 <b>Send a message to {target_name}</b>\n\n"
-        f"Write a short message that will be delivered directly with your like ✨\n\n"
+        f"Write a short message (max {_LOVE_LETTER_MAX_LEN} chars) that will be delivered directly with your like ✨\n\n"
         f"<i>Type your message below or tap ❌ Cancel:</i>",
         parse_mode=ParseMode.HTML,
         reply_markup=cancel_kb(),
@@ -329,6 +348,15 @@ async def handle_love_letter_text(update: Update, context: ContextTypes.DEFAULT_
         await _show_next_profile(update, user_id, context)
         return True
 
+    # Enforce love letter length cap
+    if len(text) > _LOVE_LETTER_MAX_LEN:
+        context.user_data["awaiting_love_letter_for"] = target_id  # restore state
+        await update.message.reply_text(
+            f"Message is too long ({len(text)} chars). Please keep it under {_LOVE_LETTER_MAX_LEN} characters:",
+            reply_markup=cancel_kb(),
+        )
+        return True
+
     await update.message.reply_text("💌 <i>Delivering your message with your like...</i>", parse_mode=ParseMode.HTML)
     await _process_swipe(user_id, target_id, True, update, context, direct_message=text)
     return True
@@ -346,6 +374,43 @@ async def swipe_dislike_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def swipe_sleep_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("current_candidate_id", None)
     await update.message.reply_text(MAIN_MENU_TEXT, reply_markup=main_menu_kb())
+
+
+async def undo_swipe_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Undoes the last swipe for premium users.
+    Removes the swipe record from DB and re-displays that profile.
+    """
+    user_id = update.effective_user.id
+    user = await db.get_user(user_id)
+
+    if not db.is_user_premium(user):
+        await update.message.reply_text(
+            "↩️ Undo swipe is a ⭐ *Premium* feature.\n\nUpgrade with /premium for unlimited undos!",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(),
+        )
+        return
+
+    last_swipe = await db.undo_last_swipe(user_id)
+    if not last_swipe:
+        await update.message.reply_text(
+            "Nothing to undo — you haven't swiped anyone yet!",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
+    restored_profile = await db.get_user(last_swipe["to_id"])
+    if not restored_profile or not restored_profile.get("profile_complete"):
+        await update.message.reply_text(
+            "↩️ Swipe undone, but that profile is no longer available.",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
+    context.user_data["current_candidate_id"] = restored_profile["user_id"]
+    await update.message.reply_text("↩️ <i>Swipe undone — here they are again:</i>", parse_mode=ParseMode.HTML)
+    await _show_profile(update.message, restored_profile)
 
 
 async def handle_like_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -403,7 +468,12 @@ async def handle_like_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", user_b_id, exc)
-        return
+    else:
+        # Like recorded but not yet mutual — confirm to the user
+        await query.message.reply_text(
+            "❤️ Liked! If they like you back, you'll get a match notification.",
+            reply_markup=main_menu_kb(),
+        )
 
 
 async def handle_pass_like(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -486,7 +556,7 @@ async def handle_swipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         target_user = await db.get_user(target_id)
         if target_user and target_user.get("is_ai"):
             delay = await db.schedule_next_ai_match_delay(from_id)
-            asyncio.create_task(_delayed_ai_match(from_id, target_id, context.bot, delay))
+            _schedule_ai_match_task(from_id, target_id, context.bot, delay, context.bot_data)
         else:
             await _notify_like_received(from_id, target_id, context)
 

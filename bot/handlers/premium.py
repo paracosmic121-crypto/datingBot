@@ -19,7 +19,7 @@ PREMIUM_PERKS = (
     "• 🚀 *High Priority Profile* — displayed first at top in discovery\n"
     "• 👀 *Unlimited Profile Views* (Free users: 10 views / 1 hr)\n"
     "• ❤️ *Unlimited Daily Likes* (Free users: 20 likes / day)\n"
-    "• ↩️ *Undo your last swipe*\n\n"
+    "• ↩️ *Undo your last swipe* — tap ↩️ anytime while swiping\n\n"
     "Choose your plan:"
 )
 
@@ -85,7 +85,36 @@ async def buy_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Validates payload format, user ID, currency, and star amount before approving payment."""
     query = update.pre_checkout_query
+    payload = query.invoice_payload or ""
+
+    # 1. Validate payload prefix
+    if not (payload.startswith("premium_15d:") or payload.startswith("premium_30d:")):
+        await query.answer(ok=False, error_message="Invalid payment payload. Please try again.")
+        return
+
+    # 2. Validate user ID embedded in payload
+    try:
+        uid = int(payload.split(":")[1])
+        if uid != query.from_user.id:
+            await query.answer(ok=False, error_message="Payment user mismatch. Please try again.")
+            return
+    except (IndexError, ValueError):
+        await query.answer(ok=False, error_message="Malformed payment payload.")
+        return
+
+    # 3. Validate currency and amount
+    expected_stars = (
+        settings.PREMIUM_15D_STARS if "premium_15d" in payload else settings.PREMIUM_30D_STARS
+    )
+    if query.currency != "XTR" or query.total_amount != expected_stars:
+        await query.answer(
+            ok=False,
+            error_message="Payment amount mismatch. Please restart the purchase.",
+        )
+        return
+
     await query.answer(ok=True)
 
 

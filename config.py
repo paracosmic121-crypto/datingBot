@@ -50,6 +50,11 @@ class Settings:
                 f"Missing required environment variables: {', '.join(missing)}. "
                 f"Copy .env.example to .env and fill them in."
             )
+        if self.ADMIN_API_KEY in ("change-me", "", None):
+            raise RuntimeError(
+                "ADMIN_API_KEY is still set to the insecure default 'change-me'. "
+                "Set a strong secret in your .env file before starting."
+            )
 
 
 settings = Settings()

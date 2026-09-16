@@ -37,7 +37,12 @@ async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYP
 
 
 async def general_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Routes text messages: first to active 1-on-1 chat if session active, otherwise ignores/falls through."""
+    """Routes text messages: love letters, active 1-on-1 chats, or ignores."""
+    if context.user_data.get("awaiting_love_letter_for"):
+        handled = await discover.handle_love_letter_text(update, context)
+        if handled:
+            return
+
     if context.user_data.get("active_chat_with"):
         handled = await chat.in_chat_message_handler(update, context)
         if handled:
@@ -95,6 +100,7 @@ def build_application() -> Application:
 
     # --- Swiping ReplyKeyboard triggers (bottom buttons) ---
     application.add_handler(MessageHandler(filters.Regex(r"^(❤️|👍|Like)"), discover.swipe_like_handler))
+    application.add_handler(MessageHandler(filters.Regex(r"^(💌|Love|Letter|Message)"), discover.swipe_love_letter_handler))
     application.add_handler(MessageHandler(filters.Regex(r"^(👎|Dislike)"), discover.swipe_dislike_handler))
     application.add_handler(MessageHandler(filters.Regex(r"^(💤|Sleep|Menu|Back)"), discover.swipe_sleep_handler))
 

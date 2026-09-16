@@ -10,9 +10,9 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
 
 
 def swipe_reply_kb() -> ReplyKeyboardMarkup:
-    """Bottom reply keyboard for swiping candidates."""
+    """Bottom reply keyboard for swiping candidates with love letter direct message button."""
     return ReplyKeyboardMarkup(
-        [["❤️", "👎", "💤"]],
+        [["❤️", "💌", "👎", "💤"]],
         resize_keyboard=True,
     )
 
@@ -34,9 +34,10 @@ def chat_room_kb() -> ReplyKeyboardMarkup:
 
 
 def start_chat_kb(target_user_id: int) -> InlineKeyboardMarkup:
-    """Inline button to start or open a chat with a match."""
+    """Inline buttons to start or open a chat with a match, or continue browsing."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💬 Start Chat", callback_data=f"start_chat:{target_user_id}")]
+        [InlineKeyboardButton("💬 Start Chat", callback_data=f"start_chat:{target_user_id}")],
+        [InlineKeyboardButton("🚀 Keep Browsing", callback_data="discover")],
     ])
 
 

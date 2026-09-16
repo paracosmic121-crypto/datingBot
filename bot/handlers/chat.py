@@ -4,6 +4,7 @@ Enables direct messaging between real users and interactive Grok AI personas.
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 
@@ -61,6 +62,7 @@ async def start_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not history:
             opening_line = partner.get("opening_line", "Heyy! 😊")
             await context.bot.send_chat_action(chat_id=user_id, action=ChatAction.TYPING)
+            await asyncio.sleep(5)
             await db.save_chat_message(target_id, user_id, opening_line)
             await target_msg.reply_text(
                 f"<b>{partner_name}</b>:\n{html.escape(opening_line)}",
@@ -158,7 +160,9 @@ async def in_chat_message_handler(update: Update, context: ContextTypes.DEFAULT_
 
         await context.bot.send_chat_action(chat_id=user_id, action=ChatAction.TYPING)
         history = await db.get_chat_history(user_id, target_id, limit=12)
-        ai_reply = await generate_grok_reply(partner, user_name, history, text)
+        ai_reply_task = asyncio.create_task(generate_grok_reply(partner, user_name, history, text))
+        await asyncio.sleep(5)
+        ai_reply = await ai_reply_task
 
         # Save AI reply
         await db.save_chat_message(target_id, user_id, ai_reply)

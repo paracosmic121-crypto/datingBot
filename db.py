@@ -294,36 +294,22 @@ async def increment_profile_view(user_id: int) -> None:
     )
 
 
-async def record_swipe(from_id: int, to_id: int, liked: bool) -> bool:
+async def record_swipe(from_id: int, to_id: int, liked: bool, message: str | None = None) -> bool:
     """
-    Stores the swipe. Returns True if this swipe created a mutual match.
-    If target is an AI profile and liked is True, auto-creates mutual like.
+    Stores the swipe. If message is provided, saves it in the like record.
+    Returns True if this swipe created a mutual match.
     """
     db = get_db()
+    data = {"liked": liked, "at": dt.datetime.utcnow()}
+    if message:
+        data["message"] = message
     await db.likes.update_one(
         {"from_id": from_id, "to_id": to_id},
-        {"$set": {"liked": liked, "at": dt.datetime.utcnow()}},
+        {"$set": data},
         upsert=True,
     )
     if not liked:
         return False
-
-    # Check if target is an AI persona -> AI personas automatically like back!
-    target_user = await get_user(to_id)
-    if target_user and target_user.get("is_ai"):
-        # Auto-record reciprocal like from AI
-        await db.likes.update_one(
-            {"from_id": to_id, "to_id": from_id},
-            {"$set": {"liked": True, "at": dt.datetime.utcnow()}},
-            upsert=True,
-        )
-        user_a, user_b = sorted([from_id, to_id])
-        await db.matches.update_one(
-            {"user_a": user_a, "user_b": user_b},
-            {"$setOnInsert": {"user_a": user_a, "user_b": user_b, "at": dt.datetime.utcnow()}},
-            upsert=True,
-        )
-        return True
 
     mutual = await db.likes.find_one({"from_id": to_id, "to_id": from_id, "liked": True})
     if not mutual:
@@ -336,6 +322,40 @@ async def record_swipe(from_id: int, to_id: int, liked: bool) -> bool:
         upsert=True,
     )
     return True
+
+
+async def get_pending_likes_count(user_id: int) -> int:
+    """Returns total count of pending unswiped likes targeting this user."""
+    db = get_db()
+    swiped_docs = await db.likes.find({"from_id": user_id}, {"to_id": 1, "_id": 0}).to_list(5000)
+    swiped_ids = [d["to_id"] for d in swiped_docs]
+    return await db.likes.count_documents({
+        "to_id": user_id,
+        "liked": True,
+        "from_id": {"$nin": swiped_ids},
+    })
+
+
+async def create_mutual_match(user_a_id: int, user_b_id: int) -> None:
+    """Explicitly records reciprocal likes and creates a match between two users (e.g. for delayed AI matches)."""
+    db = get_db()
+    now = dt.datetime.utcnow()
+    await db.likes.update_one(
+        {"from_id": user_a_id, "to_id": user_b_id},
+        {"$set": {"liked": True, "at": now}},
+        upsert=True,
+    )
+    await db.likes.update_one(
+        {"from_id": user_b_id, "to_id": user_a_id},
+        {"$set": {"liked": True, "at": now}},
+        upsert=True,
+    )
+    ua, ub = sorted([user_a_id, user_b_id])
+    await db.matches.update_one(
+        {"user_a": ua, "user_b": ub},
+        {"$setOnInsert": {"user_a": ua, "user_b": ub, "at": now}},
+        upsert=True,
+    )
 
 
 async def can_like_today(user_id: int) -> bool:

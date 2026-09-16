@@ -30,6 +30,15 @@ class Settings:
     PREMIUM_15D_STARS: int = int(os.getenv("PREMIUM_15D_STARS", "100"))  # 15 days
     PREMIUM_30D_STARS: int = int(os.getenv("PREMIUM_30D_STARS", "200"))  # 30 days
 
+    # --- AI API & Key Rotator (Grok / Groq) ---
+    AI_API_KEYS_RAW: str = os.getenv("AI_API_KEYS") or os.getenv("GROK_API_KEYS") or os.getenv("XAI_API_KEY") or ""
+    AI_MODEL: str = os.getenv("AI_MODEL") or os.getenv("GROK_MODEL") or ""
+
+    @property
+    def api_keys(self) -> list[str]:
+        keys = [k.strip() for k in self.AI_API_KEYS_RAW.split(",") if k.strip()]
+        return keys
+
     def validate(self) -> None:
         missing = []
         if not self.BOT_TOKEN:

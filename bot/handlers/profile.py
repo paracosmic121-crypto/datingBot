@@ -11,8 +11,8 @@ from telegram.ext import (
 )
 
 import db
-from bot.keyboards import cancel_kb, main_menu_kb
-from bot.states import AGE, DESCRIPTION, LOCATION, NAME, PHOTO
+from bot.keyboards import cancel_kb, edit_profile_kb, gender_selection_kb, main_menu_kb
+from bot.states import AGE, DESCRIPTION, GENDER, LOCATION, NAME, PHOTO
 from bot.handlers.start import MAIN_MENU_TEXT
 from config import settings
 
@@ -25,8 +25,10 @@ def _format_profile_caption(user: dict | None) -> str:
     name = user.get("name", "—")
     age = user.get("age", "—")
     location = user.get("location", "—")
+    gender = user.get("gender")
+    gender_str = " 👨" if gender == "male" else (" 👩" if gender == "female" else "")
     description = user.get("description", "")
-    caption = f"{name}, {age} — {location}\n\n{description}"
+    caption = f"{name}{gender_str}, {age} — {location}\n\n{description}"
     return caption
 
 
@@ -96,8 +98,32 @@ async def edit_profile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data.pop("single_field_edit", None)
     await target_msg.reply_text(
-        "Let's set up your profile. What's your name?", reply_markup=cancel_kb()
+        "Let's set up your profile!\nAre you Male or Female?",
+        reply_markup=gender_selection_kb(),
     )
+    return GENDER
+
+
+async def receive_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    raw = update.message.text.lower().strip()
+    if "male" in raw or "👨" in raw or raw == "1":
+        gender = "male"
+    elif "female" in raw or "👩" in raw or raw == "2":
+        gender = "female"
+    else:
+        await update.message.reply_text(
+            "Please choose using the buttons below:",
+            reply_markup=gender_selection_kb(),
+        )
+        return GENDER
+
+    await db.update_profile_field(update.effective_user.id, "gender", gender)
+
+    ended = await _maybe_end_single_field_edit(update, context)
+    if ended is not None:
+        return ended
+
+    await update.message.reply_text("What's your name?", reply_markup=cancel_kb())
     return NAME
 
 
@@ -115,10 +141,10 @@ async def photo_edit_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE
             await db.upsert_user_basic(u.id, u.username, u.first_name)
         context.user_data.pop("single_field_edit", None)
         await target_msg.reply_text(
-            "You don't have a complete profile yet! Let's set it up from the beginning.\nWhat's your name?",
-            reply_markup=cancel_kb(),
+            "You don't have a complete profile yet! Let's set it up from the beginning.\nAre you Male or Female?",
+            reply_markup=gender_selection_kb(),
         )
-        return NAME
+        return GENDER
 
     context.user_data["single_field_edit"] = "photo"
     await target_msg.reply_text(
@@ -141,10 +167,10 @@ async def text_edit_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await db.upsert_user_basic(u.id, u.username, u.first_name)
         context.user_data.pop("single_field_edit", None)
         await target_msg.reply_text(
-            "You don't have a complete profile yet! Let's set it up from the beginning.\nWhat's your name?",
-            reply_markup=cancel_kb(),
+            "You don't have a complete profile yet! Let's set it up from the beginning.\nAre you Male or Female?",
+            reply_markup=gender_selection_kb(),
         )
-        return NAME
+        return GENDER
 
     context.user_data["single_field_edit"] = "description"
     await target_msg.reply_text(
@@ -160,6 +186,7 @@ async def edit_field_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     field = query.data.replace("edit_", "")
     context.user_data["single_field_edit"] = field
     prompts = {
+        "gender": ("Are you Male or Female?", GENDER),
         "name": ("What's your name?", NAME),
         "age": ("How old are you?", AGE),
         "location": ("Which city are you in?", LOCATION),
@@ -167,7 +194,8 @@ async def edit_field_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "photo": ("Send a new profile photo.", PHOTO),
     }
     text, state = prompts[field]
-    await query.message.reply_text(text, reply_markup=cancel_kb())
+    kb = gender_selection_kb() if state == GENDER else cancel_kb()
+    await query.message.reply_text(text, reply_markup=kb)
     return state
 
 
@@ -272,10 +300,11 @@ def build_edit_profile_conversation() -> ConversationHandler:
             MessageHandler(filters.Regex(r"^(3|Change my photo/video|change photo)$"), photo_edit_shortcut),
             MessageHandler(filters.Regex(r"^(4|Change profile text|change text)$"), text_edit_shortcut),
             CallbackQueryHandler(
-                edit_field_entry, pattern=r"^edit_(name|age|location|description|photo)$"
+                edit_field_entry, pattern=r"^edit_(gender|name|age|location|description|photo)$"
             ),
         ],
         states={
+            GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^(❌ Cancel|cancel|/cancel)$"), receive_gender)],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^(❌ Cancel|cancel|/cancel)$"), receive_name)],
             AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^(❌ Cancel|cancel|/cancel)$"), receive_age)],
             LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r"^(❌ Cancel|cancel|/cancel)$"), receive_location)],

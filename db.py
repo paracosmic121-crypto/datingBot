@@ -35,8 +35,11 @@ async def ensure_indexes() -> None:
     db = get_db()
     await db.users.create_index("user_id", unique=True)
     await db.users.create_index("is_premium")
+    await db.users.create_index("gender")
+    await db.users.create_index("is_ai")
     await db.likes.create_index([("from_id", 1), ("to_id", 1)], unique=True)
     await db.matches.create_index([("user_a", 1), ("user_b", 1)], unique=True)
+    await db.messages.create_index([("from_id", 1), ("to_id", 1), ("created_at", 1)])
 
 
 # --------------------------------------------------------------------------- #
@@ -61,7 +64,10 @@ async def upsert_user_basic(user_id: int, username: str | None, first_name: str 
                 "user_id": user_id,
                 "created_at": dt.datetime.utcnow(),
                 "profile_complete": False,
+                "gender": None,
+                "looking_for": None,
                 "is_premium": False,
+                "is_ai": False,
                 "likes_given_today": 0,
                 "likes_reset_at": dt.datetime.utcnow(),
                 "views_this_hour": 0,
@@ -73,18 +79,25 @@ async def upsert_user_basic(user_id: int, username: str | None, first_name: str 
 
 
 async def update_profile_field(user_id: int, field: str, value: Any) -> None:
-    allowed = {"name", "age", "location", "description", "photo_file_id"}
+    allowed = {"gender", "looking_for", "name", "age", "location", "description", "photo_file_id"}
     if field not in allowed:
         raise ValueError(f"Cannot update field '{field}'")
+    
+    update_data = {field: value, "last_seen": dt.datetime.utcnow()}
+    if field == "gender":
+        # Automatically set looking_for to the opposite gender if not already set
+        update_data["looking_for"] = "female" if value == "male" else "male"
+
     await get_db().users.update_one(
         {"user_id": user_id},
         {
-            "$set": {field: value, "last_seen": dt.datetime.utcnow()},
+            "$set": update_data,
             "$setOnInsert": {
                 "user_id": user_id,
                 "created_at": dt.datetime.utcnow(),
                 "profile_complete": False,
                 "is_premium": False,
+                "is_ai": False,
                 "likes_given_today": 0,
                 "likes_reset_at": dt.datetime.utcnow(),
                 "views_this_hour": 0,
@@ -104,6 +117,7 @@ async def mark_profile_complete(user_id: int) -> None:
                 "user_id": user_id,
                 "created_at": dt.datetime.utcnow(),
                 "is_premium": False,
+                "is_ai": False,
                 "likes_given_today": 0,
                 "likes_reset_at": dt.datetime.utcnow(),
                 "views_this_hour": 0,
@@ -123,6 +137,7 @@ async def set_premium(user_id: int, is_premium: bool, until: dt.datetime | None 
                 "user_id": user_id,
                 "created_at": dt.datetime.utcnow(),
                 "profile_complete": False,
+                "is_ai": False,
                 "likes_given_today": 0,
                 "likes_reset_at": dt.datetime.utcnow(),
                 "views_this_hour": 0,
@@ -144,24 +159,57 @@ def is_user_premium(user: dict | None) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# AI Personas / Fake Profiles
+# --------------------------------------------------------------------------- #
+
+async def upsert_ai_profile(profile_dict: dict) -> None:
+    """Inserts or updates an AI fake profile in MongoDB."""
+    user_id = profile_dict["user_id"]
+    profile_dict["profile_complete"] = True
+    profile_dict["is_ai"] = True
+    profile_dict["last_seen"] = dt.datetime.utcnow()
+    await get_db().users.update_one(
+        {"user_id": user_id},
+        {"$set": profile_dict},
+        upsert=True,
+    )
+
+
+async def is_ai_user(user_id: int) -> bool:
+    """Returns True if user is an AI persona."""
+    user = await get_user(user_id)
+    return bool(user and user.get("is_ai"))
+
+
+# --------------------------------------------------------------------------- #
 # Discovery / swiping
 # --------------------------------------------------------------------------- #
 
 async def get_next_profile(user_id: int) -> Optional[dict]:
     """
-    Returns next candidate profile with HIGH PRIORITY for premium users.
+    Returns next candidate profile matching user's preferred gender,
+    with HIGH PRIORITY for premium users.
     """
     db = get_db()
+    current_user = await get_user(user_id)
+    if not current_user:
+        return None
+
+    # Determine desired gender (male -> female, female -> male)
+    user_gender = current_user.get("gender", "male")
+    target_gender = current_user.get("looking_for") or ("female" if user_gender == "male" else "male")
+
     swiped_docs = await db.likes.find(
         {"from_id": user_id}, {"to_id": 1, "_id": 0}
     ).to_list(2000)
     already_swiped = [d["to_id"] for d in swiped_docs]
     now = dt.datetime.utcnow()
 
-    # 1. High priority: Premium profiles
+    # 1. High priority: Premium profiles matching target gender
     query_prem = {
         "user_id": {"$ne": user_id, "$nin": already_swiped},
         "profile_complete": True,
+        "gender": target_gender,
         "is_premium": True,
         "$or": [
             {"premium_until": None},
@@ -172,14 +220,24 @@ async def get_next_profile(user_id: int) -> Optional[dict]:
     if prem_candidates:
         return random.choice(prem_candidates)
 
-    # 2. Standard profiles
+    # 2. Standard profiles matching target gender
     query_std = {
         "user_id": {"$ne": user_id, "$nin": already_swiped},
         "profile_complete": True,
+        "gender": target_gender,
     }
     std_candidates = await db.users.find(query_std).limit(10).to_list(10)
     if std_candidates:
         return random.choice(std_candidates)
+
+    # Fallback if no target gender matches found: any complete profile
+    query_fallback = {
+        "user_id": {"$ne": user_id, "$nin": already_swiped},
+        "profile_complete": True,
+    }
+    fallback_candidates = await db.users.find(query_fallback).limit(5).to_list(5)
+    if fallback_candidates:
+        return random.choice(fallback_candidates)
 
     return None
 
@@ -239,6 +297,7 @@ async def increment_profile_view(user_id: int) -> None:
 async def record_swipe(from_id: int, to_id: int, liked: bool) -> bool:
     """
     Stores the swipe. Returns True if this swipe created a mutual match.
+    If target is an AI profile and liked is True, auto-creates mutual like.
     """
     db = get_db()
     await db.likes.update_one(
@@ -248,6 +307,23 @@ async def record_swipe(from_id: int, to_id: int, liked: bool) -> bool:
     )
     if not liked:
         return False
+
+    # Check if target is an AI persona -> AI personas automatically like back!
+    target_user = await get_user(to_id)
+    if target_user and target_user.get("is_ai"):
+        # Auto-record reciprocal like from AI
+        await db.likes.update_one(
+            {"from_id": to_id, "to_id": from_id},
+            {"$set": {"liked": True, "at": dt.datetime.utcnow()}},
+            upsert=True,
+        )
+        user_a, user_b = sorted([from_id, to_id])
+        await db.matches.update_one(
+            {"user_a": user_a, "user_b": user_b},
+            {"$setOnInsert": {"user_a": user_a, "user_b": user_b, "at": dt.datetime.utcnow()}},
+            upsert=True,
+        )
+        return True
 
     mutual = await db.likes.find_one({"from_id": to_id, "to_id": from_id, "liked": True})
     if not mutual:
@@ -289,6 +365,56 @@ async def increment_like_counter(user_id: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# In-Bot Chat & Messages
+# --------------------------------------------------------------------------- #
+
+async def save_chat_message(from_id: int, to_id: int, text: str) -> dict:
+    """Stores a 1-on-1 chat message."""
+    db = get_db()
+    msg = {
+        "from_id": from_id,
+        "to_id": to_id,
+        "text": text,
+        "created_at": dt.datetime.utcnow(),
+    }
+    await db.messages.insert_one(msg)
+    return msg
+
+
+async def get_chat_history(user_a: int, user_b: int, limit: int = 15) -> list[dict]:
+    """Retrieves recent conversation history between user_a and user_b."""
+    db = get_db()
+    cursor = db.messages.find({
+        "$or": [
+            {"from_id": user_a, "to_id": user_b},
+            {"from_id": user_b, "to_id": user_a},
+        ]
+    }).sort("created_at", -1).limit(limit)
+    history = await cursor.to_list(limit)
+    history.reverse()  # chronological order
+    return history
+
+
+async def get_user_matches(user_id: int) -> list[dict]:
+    """Returns list of user profile dicts that user_id has mutual matches with."""
+    db = get_db()
+    matches_docs = await db.matches.find({
+        "$or": [{"user_a": user_id}, {"user_b": user_id}]
+    }).sort("at", -1).to_list(50)
+
+    matched_partner_ids = []
+    for m in matches_docs:
+        partner_id = m["user_b"] if m["user_a"] == user_id else m["user_a"]
+        matched_partner_ids.append(partner_id)
+
+    if not matched_partner_ids:
+        return []
+
+    partners = await db.users.find({"user_id": {"$in": matched_partner_ids}}).to_list(len(matched_partner_ids))
+    return partners
+
+
+# --------------------------------------------------------------------------- #
 # Stats (used by the FastAPI admin endpoints)
 # --------------------------------------------------------------------------- #
 
@@ -300,4 +426,5 @@ async def get_stats() -> dict:
         "premium_users": await db.users.count_documents({"is_premium": True}),
         "total_matches": await db.matches.count_documents({}),
         "total_likes": await db.likes.count_documents({"liked": True}),
+        "total_messages": await db.messages.count_documents({}),
     }

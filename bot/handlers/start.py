@@ -59,9 +59,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Or use commands:\n"
         "/start - Main menu\n"
         "/discover - View profiles\n"
+        "/chats - View your matches & active chats\n"
         "/myprofile - View your profile\n"
         "/editprofile - Setup full profile\n"
         "/premium - Premium info\n"
+        "/end - Stop active chat\n"
         "/cancel - Cancel current action",
         parse_mode="Markdown",
         reply_markup=main_menu_kb(),

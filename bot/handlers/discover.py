@@ -6,7 +6,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 import db
-from bot.keyboards import like_received_kb, main_menu_kb, swipe_reply_kb
+from bot.keyboards import like_received_kb, main_menu_kb, start_chat_kb, swipe_reply_kb
 from bot.handlers.start import MAIN_MENU_TEXT
 
 logger = logging.getLogger(__name__)
@@ -14,12 +14,13 @@ logger = logging.getLogger(__name__)
 
 def _format_match_text(matched_user: dict) -> str:
     name = html.escape(str(matched_user.get("name", "Someone")))
-    username = matched_user.get("username")
-    if username:
-        user_link = f"@{html.escape(username)}"
-    else:
-        user_link = f'<a href="tg://user?id={matched_user.get("user_id")}">{name}</a>'
-    return f"🎉 It's a match with <b>{name}</b>!\nSay hi: {user_link}"
+    age = matched_user.get("age", "—")
+    location = html.escape(str(matched_user.get("location", "—")))
+    return (
+        f"🎉 <b>IT'S A MATCH!</b>\n\n"
+        f"You and <b>{name}</b> ({age}, {location}) liked each other!\n\n"
+        f"Tap below to start chatting directly in the bot: 👇"
+    )
 
 
 async def _show_next_profile(update_or_query, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -155,6 +156,7 @@ async def _process_swipe(user_id: int, target_id: int, liked: bool, update: Upda
                 chat_id=user_id,
                 text=_format_match_text(target_user),
                 parse_mode=ParseMode.HTML,
+                reply_markup=start_chat_kb(target_id),
             )
         except Exception as exc:
             logger.warning("Failed to send match message to user %s: %s", user_id, exc)
@@ -164,6 +166,7 @@ async def _process_swipe(user_id: int, target_id: int, liked: bool, update: Upda
                 chat_id=target_id,
                 text=_format_match_text(from_user),
                 parse_mode=ParseMode.HTML,
+                reply_markup=start_chat_kb(user_id),
             )
         except Exception as exc:
             logger.warning("Failed to send match message to user %s: %s", target_id, exc)
@@ -236,6 +239,7 @@ async def handle_like_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     chat_id=sender_id,
                     text=_format_match_text(target_user),
                     parse_mode=ParseMode.HTML,
+                    reply_markup=start_chat_kb(user_b_id),
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", sender_id, exc)
@@ -246,6 +250,7 @@ async def handle_like_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     chat_id=user_b_id,
                     text=_format_match_text(from_user),
                     parse_mode=ParseMode.HTML,
+                    reply_markup=start_chat_kb(sender_id),
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", user_b_id, exc)
@@ -309,6 +314,7 @@ async def handle_swipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 chat_id=from_id,
                 text=_format_match_text(target_user),
                 parse_mode=ParseMode.HTML,
+                reply_markup=start_chat_kb(target_id),
             )
         except Exception as exc:
             logger.warning("Failed to send match message to user %s: %s", from_id, exc)
@@ -318,6 +324,7 @@ async def handle_swipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 chat_id=target_id,
                 text=_format_match_text(from_user),
                 parse_mode=ParseMode.HTML,
+                reply_markup=start_chat_kb(from_id),
             )
         except Exception as exc:
             logger.warning("Failed to send match message to user %s: %s", target_id, exc)

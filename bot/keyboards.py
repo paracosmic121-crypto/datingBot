@@ -17,6 +17,40 @@ def swipe_reply_kb() -> ReplyKeyboardMarkup:
     )
 
 
+def gender_selection_kb() -> ReplyKeyboardMarkup:
+    """Keyboard for selecting gender."""
+    return ReplyKeyboardMarkup(
+        [["👨 Male", "👩 Female"], ["❌ Cancel"]],
+        resize_keyboard=True,
+    )
+
+
+def chat_room_kb() -> ReplyKeyboardMarkup:
+    """Keyboard while chatting inside the bot."""
+    return ReplyKeyboardMarkup(
+        [["🚪 Stop Chat"]],
+        resize_keyboard=True,
+    )
+
+
+def start_chat_kb(target_user_id: int) -> InlineKeyboardMarkup:
+    """Inline button to start or open a chat with a match."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Start Chat", callback_data=f"start_chat:{target_user_id}")]
+    ])
+
+
+def matches_list_kb(matches: list[dict]) -> InlineKeyboardMarkup:
+    """List of matches for easy chat switching."""
+    rows = []
+    for m in matches:
+        name = m.get("name", "Match")
+        uid = m.get("user_id")
+        rows.append([InlineKeyboardButton(f"💬 {name}", callback_data=f"start_chat:{uid}")])
+    rows.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def cancel_kb() -> ReplyKeyboardMarkup:
     """Bottom reply keyboard during editing."""
     return ReplyKeyboardMarkup(
@@ -27,6 +61,7 @@ def cancel_kb() -> ReplyKeyboardMarkup:
 
 def edit_profile_kb() -> InlineKeyboardMarkup:
     rows = [
+        [InlineKeyboardButton("Gender", callback_data="edit_gender")],
         [InlineKeyboardButton("Name", callback_data="edit_name")],
         [InlineKeyboardButton("Age", callback_data="edit_age")],
         [InlineKeyboardButton("Location", callback_data="edit_location")],

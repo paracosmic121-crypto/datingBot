@@ -156,11 +156,10 @@ async def in_chat_message_handler(update: Update, context: ContextTypes.DEFAULT_
     # 1. AI Persona response via Grok
     if partner.get("is_ai"):
         partner_name = html.escape(str(partner.get("name", "Partner")))
-        user_name = user.get("name", update.effective_user.first_name or "Friend") if user else "Friend"
 
         await context.bot.send_chat_action(chat_id=user_id, action=ChatAction.TYPING)
         history = await db.get_chat_history(user_id, target_id, limit=12)
-        ai_reply_task = asyncio.create_task(generate_grok_reply(partner, user_name, history, text))
+        ai_reply_task = asyncio.create_task(generate_grok_reply(partner, user, history, text))
         await asyncio.sleep(5)
         ai_reply = await ai_reply_task
 

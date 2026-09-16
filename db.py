@@ -358,6 +358,40 @@ async def create_mutual_match(user_a_id: int, user_b_id: int) -> None:
     )
 
 
+async def schedule_next_ai_match_delay(user_id: int) -> int:
+    """
+    Calculates the delay in seconds for the next fake AI match.
+    - 1st match: initial natural delay (30-60s).
+    - Subsequent matches: spaced out by 4 to 5 hours (14,400 - 18,000s) from the last match/scheduled slot.
+    Updates `next_ai_match_at` on the user record.
+    """
+    user = await get_user(user_id)
+    now = dt.datetime.utcnow()
+    last_scheduled = user.get("next_ai_match_at") if user else None
+
+    if last_scheduled and last_scheduled > now:
+        # Another match is already pending in the future -> space this one 4-5 hours after it
+        interval = dt.timedelta(hours=random.uniform(4.0, 5.0))
+        next_time = last_scheduled + interval
+    elif last_scheduled and (now - last_scheduled) < dt.timedelta(hours=4):
+        # A match was delivered recently (less than 4 hours ago) -> delay by 4-5 hours from then
+        interval = dt.timedelta(hours=random.uniform(4.0, 5.0))
+        next_time = last_scheduled + interval
+        if next_time <= now:
+            next_time = now + dt.timedelta(seconds=random.randint(30, 60))
+    else:
+        # First match or more than 4 hours passed -> natural short delay (30-60s)
+        next_time = now + dt.timedelta(seconds=random.randint(30, 60))
+
+    await get_db().users.update_one(
+        {"user_id": user_id},
+        {"$set": {"next_ai_match_at": next_time}},
+    )
+
+    delay_seconds = int((next_time - now).total_seconds())
+    return max(delay_seconds, 20)
+
+
 async def can_like_today(user_id: int) -> bool:
     """Free users are rate-limited; premium users are unlimited."""
     user = await get_user(user_id)

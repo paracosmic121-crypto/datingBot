@@ -24,7 +24,7 @@ def _get_provider_config(api_key: str) -> tuple[str, str]:
     if api_key.startswith("gsk_"):
         # Groq endpoint
         endpoint = "https://api.groq.com/openai/v1/chat/completions"
-        model = settings.AI_MODEL or "llama-3.3-70b-versatile"
+        model = settings.AI_MODEL or "openai/gpt-oss-120b"
         return endpoint, model
     else:
         # xAI Grok endpoint
@@ -35,12 +35,13 @@ def _get_provider_config(api_key: str) -> tuple[str, str]:
 
 async def generate_grok_reply(
     persona: dict,
-    user_name: str,
+    user_or_name: dict | str,
     chat_history: list[dict],
     user_message: str,
 ) -> str:
     """
     Generates a natural, human-like dating response using rotated API keys.
+    Mirrors user language (Hinglish/English) and references user profile details.
     """
     global _current_key_idx
     keys = settings.api_keys
@@ -49,22 +50,45 @@ async def generate_grok_reply(
         logger.warning("No AI API keys configured. Returning default friendly reply.")
         return "Hey! Nice to hear from you 😊 How has your day been?"
 
+    # Extract user profile info
+    if isinstance(user_or_name, dict):
+        user_name = user_or_name.get("name") or user_or_name.get("first_name") or "Friend"
+        user_age = user_or_name.get("age", "")
+        user_loc = user_or_name.get("location", "")
+        user_desc = user_or_name.get("description", "")
+    else:
+        user_name = str(user_or_name or "Friend")
+        user_age = ""
+        user_loc = ""
+        user_desc = ""
+
+    user_info_parts = [f"Name: {user_name}"]
+    if user_age:
+        user_info_parts.append(f"Age: {user_age}")
+    if user_loc:
+        user_info_parts.append(f"Location: {user_loc}")
+    if user_desc:
+        user_info_parts.append(f"Bio/Interests: {user_desc}")
+    user_context = ", ".join(user_info_parts)
+
     name = persona.get("name", "Someone")
     age = persona.get("age", 22)
     location = persona.get("location", "Nearby")
     gender = persona.get("gender", "female")
-    custom_prompt = persona.get("persona_prompt")
+    custom_prompt = persona.get("persona_prompt", "")
+    persona_desc = persona.get("description", "")
 
-    default_system = (
-        f"You are {name}, a {age}-year-old {gender} living in {location}. "
-        f"You are chatting on a fun, casual dating bot with {user_name}. "
-        f"Personality: warm, playful, charming, authentic, and engaging. "
-        f"Keep responses natural, short to medium length (1-3 sentences max), like real messaging on Telegram. "
-        f"Never say you are an AI, a language model, or a bot. Act 100% human. "
-        f"Occasionally use light emojis. Respond in the same language or tone (English or Hinglish) the user speaks."
+    system_instruction = (
+        f"You are {name}, a {age}-year-old {gender} living in {location}.\n"
+        f"Your Profile Bio: {persona_desc}\n"
+        f"Your Personality: {custom_prompt}\n\n"
+        f"YOU ARE CHATTING 1-ON-1 WITH: {user_context}.\n\n"
+        f"CRITICAL CHAT GUIDELINES:\n"
+        f"1. Language Adaptation: Mirror the user's language and style seamlessly! If the user speaks Hinglish (e.g., 'Acha tha tum btao', 'Kya kar rhe ho', 'Kaisi ho?'), reply in natural, fun, conversational Hinglish (Hindi written in English alphabet). If the user speaks English, reply in casual English.\n"
+        f"2. Personal Connection: Address the user as {user_name} when natural. You know their profile details ({user_context}) so reference their city/vibe if it makes sense in conversation.\n"
+        f"3. Human & Casual: Keep messages concise (1-3 sentences), lively, cute/flirty/friendly, and natural like real chatting on Telegram or WhatsApp. Never write long essays or repetitive robot lines.\n"
+        f"4. Never break character: You are 100% a real human on a dating app. Never say you are an AI, bot, or virtual assistant."
     )
-
-    system_instruction = custom_prompt if custom_prompt else default_system
 
     messages: list[dict] = [{"role": "system", "content": system_instruction}]
 
@@ -95,7 +119,7 @@ async def generate_grok_reply(
         }
 
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(endpoint, headers=headers, json=payload)
                 if resp.status_code == 200:
                     # Advance global index to next key for the subsequent request
@@ -115,7 +139,7 @@ async def generate_grok_reply(
                     logger.error("API error %s: %s", resp.status_code, resp.text)
                     continue
         except Exception as exc:
-            logger.warning("Error with key %s: %s. Rotating...", key_index + 1, exc)
+            logger.warning("Error with key %s: %s (%s). Rotating...", key_index + 1, exc, type(exc).__name__)
             continue
 
     # If all keys failed, advance index and return friendly fallback

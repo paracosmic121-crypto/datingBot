@@ -34,9 +34,24 @@ def chat_room_kb() -> ReplyKeyboardMarkup:
 
 
 def start_chat_kb(target_user_id: int) -> InlineKeyboardMarkup:
-    """Inline buttons to start or open a chat with a match, or continue browsing."""
+    """Inline buttons to start or open a chat with a fake AI match, or continue browsing."""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Start Chat", callback_data=f"start_chat:{target_user_id}")],
+        [InlineKeyboardButton("🚀 Keep Browsing", callback_data="discover")],
+    ])
+
+
+def real_match_kb(target_user: dict) -> InlineKeyboardMarkup:
+    """Inline buttons for real user match with direct Telegram DM link."""
+    username = target_user.get("username")
+    uid = target_user.get("user_id")
+    if username:
+        chat_url = f"https://t.me/{username}"
+    else:
+        chat_url = f"tg://user?id={uid}"
+
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 Open Telegram Chat", url=chat_url)],
         [InlineKeyboardButton("🚀 Keep Browsing", callback_data="discover")],
     ])
 

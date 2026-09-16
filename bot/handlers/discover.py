@@ -9,7 +9,14 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 import db
-from bot.keyboards import cancel_kb, like_received_kb, main_menu_kb, start_chat_kb, swipe_reply_kb
+from bot.keyboards import (
+    cancel_kb,
+    like_received_kb,
+    main_menu_kb,
+    real_match_kb,
+    start_chat_kb,
+    swipe_reply_kb,
+)
 from bot.handlers.start import MAIN_MENU_TEXT
 
 logger = logging.getLogger(__name__)
@@ -19,11 +26,35 @@ def _format_match_text(matched_user: dict) -> str:
     name = html.escape(str(matched_user.get("name", "Someone")))
     age = matched_user.get("age", "—")
     location = html.escape(str(matched_user.get("location", "—")))
-    return (
-        f"🎉 <b>IT'S A MATCH!</b>\n\n"
-        f"You and <b>{name}</b> ({age}, {location}) liked each other!\n\n"
-        f"Tap below to start chatting directly in the bot: 👇"
-    )
+    is_ai = bool(matched_user.get("is_ai"))
+
+    if is_ai:
+        return (
+            f"🎉 <b>IT'S A MATCH!</b>\n\n"
+            f"You and <b>{name}</b> ({age}, {location}) liked each other! ✨\n\n"
+            f"<i>Tap below to start chatting directly in the bot: 👇</i>"
+        )
+    else:
+        username = matched_user.get("username")
+        uid = matched_user.get("user_id")
+        if username:
+            contact_str = f"@{html.escape(username)}"
+        else:
+            contact_str = f'<a href="tg://user?id={uid}">{name}</a>'
+
+        return (
+            f"🎉 <b>IT'S A MATCH!</b>\n\n"
+            f"You and <b>{name}</b> ({age}, {location}) liked each other! ✨\n\n"
+            f"💬 <b>Telegram:</b> {contact_str}\n\n"
+            f"<i>Tap below to open their Telegram chat directly and start talking: 👇</i>"
+        )
+
+
+def _get_match_kb(matched_user: dict):
+    """Returns in-bot chat keyboard for AI fake profiles, and Telegram DM link keyboard for real users."""
+    if matched_user.get("is_ai"):
+        return start_chat_kb(matched_user.get("user_id"))
+    return real_match_kb(matched_user)
 
 
 async def _delayed_ai_match(user_id: int, ai_id: int, bot, delay_seconds: int = 25) -> None:
@@ -214,7 +245,7 @@ async def _process_swipe(
                 chat_id=user_id,
                 text=_format_match_text(target_user),
                 parse_mode=ParseMode.HTML,
-                reply_markup=start_chat_kb(target_id),
+                reply_markup=_get_match_kb(target_user),
             )
         except Exception as exc:
             logger.warning("Failed to send match message to user %s: %s", user_id, exc)
@@ -225,7 +256,7 @@ async def _process_swipe(
                     chat_id=target_id,
                     text=_format_match_text(from_user),
                     parse_mode=ParseMode.HTML,
-                    reply_markup=start_chat_kb(user_id),
+                    reply_markup=_get_match_kb(from_user),
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", target_id, exc)
@@ -234,8 +265,8 @@ async def _process_swipe(
     elif liked:
         target_user = await db.get_user(target_id)
         if target_user and target_user.get("is_ai"):
-            # Delay the AI match response so it feels natural and realistic
-            delay = random.randint(20, 45)
+            # Enforce 1 match at a time and space multiple fake matches by 4-5 hours
+            delay = await db.schedule_next_ai_match_delay(user_id)
             asyncio.create_task(_delayed_ai_match(user_id, target_id, context.bot, delay))
         else:
             # User A liked User B (not yet a match) -> notify User B with message
@@ -357,7 +388,7 @@ async def handle_like_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     chat_id=sender_id,
                     text=_format_match_text(target_user),
                     parse_mode=ParseMode.HTML,
-                    reply_markup=start_chat_kb(user_b_id),
+                    reply_markup=_get_match_kb(target_user),
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", sender_id, exc)
@@ -368,7 +399,7 @@ async def handle_like_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     chat_id=user_b_id,
                     text=_format_match_text(from_user),
                     parse_mode=ParseMode.HTML,
-                    reply_markup=start_chat_kb(sender_id),
+                    reply_markup=_get_match_kb(from_user),
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", user_b_id, exc)
@@ -434,7 +465,7 @@ async def handle_swipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 chat_id=from_id,
                 text=_format_match_text(target_user),
                 parse_mode=ParseMode.HTML,
-                reply_markup=start_chat_kb(target_id),
+                reply_markup=_get_match_kb(target_user),
             )
         except Exception as exc:
             logger.warning("Failed to send match message to user %s: %s", from_id, exc)
@@ -445,7 +476,7 @@ async def handle_swipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     chat_id=target_id,
                     text=_format_match_text(from_user),
                     parse_mode=ParseMode.HTML,
-                    reply_markup=start_chat_kb(from_id),
+                    reply_markup=_get_match_kb(from_user),
                 )
             except Exception as exc:
                 logger.warning("Failed to send match message to user %s: %s", target_id, exc)
@@ -454,7 +485,7 @@ async def handle_swipe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     elif liked:
         target_user = await db.get_user(target_id)
         if target_user and target_user.get("is_ai"):
-            delay = random.randint(20, 45)
+            delay = await db.schedule_next_ai_match_delay(from_id)
             asyncio.create_task(_delayed_ai_match(from_id, target_id, context.bot, delay))
         else:
             await _notify_like_received(from_id, target_id, context)

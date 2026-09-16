@@ -203,11 +203,9 @@ async def can_view_profile_now(user_id: int) -> tuple[bool, int, int]:
 
     # If more than 1 hour passed since window start, reset window
     if (now - window_start) > dt.timedelta(hours=1):
-        asyncio.create_task(
-            get_db().users.update_one(
-                {"user_id": user_id},
-                {"$set": {"views_this_hour": 0, "views_window_start": now}},
-            )
+        await get_db().users.update_one(
+            {"user_id": user_id},
+            {"$set": {"views_this_hour": 0, "views_window_start": now}},
         )
         return True, settings.FREE_VIEWS_PER_HOUR, 0
 
@@ -222,21 +220,19 @@ async def can_view_profile_now(user_id: int) -> tuple[bool, int, int]:
 
 
 async def increment_profile_view(user_id: int) -> None:
-    """Non-blocking increment for profile views."""
+    """Increment profile view counter for non-premium users."""
     user = await get_user(user_id)
     if is_user_premium(user):
         return
 
     now = dt.datetime.utcnow()
-    asyncio.create_task(
-        get_db().users.update_one(
-            {"user_id": user_id},
-            {
-                "$inc": {"views_this_hour": 1},
-                "$setOnInsert": {"views_window_start": now},
-            },
-            upsert=True,
-        )
+    await get_db().users.update_one(
+        {"user_id": user_id},
+        {
+            "$inc": {"views_this_hour": 1},
+            "$setOnInsert": {"views_window_start": now},
+        },
+        upsert=True,
     )
 
 
@@ -277,11 +273,9 @@ async def can_like_today(user_id: int) -> bool:
     reset_at = user.get("likes_reset_at", dt.datetime.utcnow())
     now = dt.datetime.utcnow()
     if (now - reset_at) > dt.timedelta(hours=24):
-        asyncio.create_task(
-            get_db().users.update_one(
-                {"user_id": user_id},
-                {"$set": {"likes_given_today": 0, "likes_reset_at": now}},
-            )
+        await get_db().users.update_one(
+            {"user_id": user_id},
+            {"$set": {"likes_given_today": 0, "likes_reset_at": now}},
         )
         return True
 
@@ -289,10 +283,8 @@ async def can_like_today(user_id: int) -> bool:
 
 
 async def increment_like_counter(user_id: int) -> None:
-    asyncio.create_task(
-        get_db().users.update_one(
-            {"user_id": user_id}, {"$inc": {"likes_given_today": 1}}
-        )
+    await get_db().users.update_one(
+        {"user_id": user_id}, {"$inc": {"likes_given_today": 1}}
     )
 
 
